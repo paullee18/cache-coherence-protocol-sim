@@ -1,5 +1,14 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from constants import (
+    L1_CACHE_HIT_CC,
+    MEM_FETCH_CC,
+    BUS_UPDATE_WORD_CC,
+    EVICT_DIRTY_CACHE_BLOCK_CC,
+)
 import math
+import logging
+logging.basicConfig(level=logging.INFO)
+LOGGER = logging.getLogger("coherence")
 
 @dataclass
 class MemAddressCacheInfo:
@@ -53,8 +62,8 @@ class DLL:
 
 @dataclass
 class LRUEvictionHandler:
-    tag_to_node: dict[int, DLLNode] = {}
-    dll: DLL = DLL()
+    tag_to_node: dict[int, DLLNode] = field(default_factory=dict)
+    dll: DLL = field(default_factory=DLL)
 
     def use(self, tag: int):
         if tag in self.tag_to_node:
@@ -84,42 +93,61 @@ class CacheSet:
         self.index = index
         self.eviction_handler = LRUEvictionHandler()
 
-    def read(self, tag):
+    def read(self, tag, cache: "Cache"):
         if tag not in self.cache_blocks:
+            cache.log(f"Cache miss for tag: {tag}, set id = {self.index}")
+            cache.cache_misses+=1
+            cache.cycles+=MEM_FETCH_CC
             # have to load it in, check if set is at full capacity
             if len(self.cache_blocks) == self.associativity:
+                cache.log(f"Cache set full with size {len(self.cache_blocks)} and associativity {self.associativity}. Evicting.")
                 # have to choose one to evict
                 evicted_tag = self.eviction_handler.evict()
                 # handle writing of evicted block if needed
-                evicted_block = self.cache_blocks[evicted_block]
+                evicted_block = self.cache_blocks[evicted_tag]
+                cache.log(f"Evicting block: {evicted_block}")
                 if evicted_block.dirty:
                     # write
-                    pass
+                    cache.log(f"Writing to memory for dirty evicted block")
+                    cache.cycles+=EVICT_DIRTY_CACHE_BLOCK_CC
 
                 self.cache_blocks.pop(evicted_tag)
 
             # bring in new block
             self.cache_blocks[tag] = CacheBlock(tag)
+        else:
+            cache.log(f"Cache hit for tag: {tag}, set id = {self.index}")
+            cache.cache_hits+=1
+            cache.cycles+=L1_CACHE_HIT_CC
         
         self.eviction_handler.use(tag)
         # perform read
 
-    def write(self, tag):
+    def write(self, tag, cache: "Cache"):
         if tag not in self.cache_blocks:
+            cache.log(f"Cache miss for tag: {tag}, set id = {self.index}")
+            cache.cache_misses+=1
+            cache.cycles+=MEM_FETCH_CC
             # have to load it in, check if set is at full capacity
             if len(self.cache_blocks) == self.associativity:
                 # have to choose one to evict
+                cache.log(f"Cache set full with size {len(self.cache_blocks)} and associativity {self.associativity}. Evicting.")
                 evicted_tag = self.eviction_handler.evict()
                 # handle writing of evicted block if needed
-                evicted_block = self.cache_blocks[evicted_block]
+                evicted_block = self.cache_blocks[evicted_tag]
+                cache.log(f"Evicting block: {evicted_block}")
                 if evicted_block.dirty:
                     # write
-                    pass
+                    cache.log(f"Writing to memory for dirty evicted block")
+                    cache.cycles+=EVICT_DIRTY_CACHE_BLOCK_CC
 
                 self.cache_blocks.pop(evicted_tag)
-
             # bring in new block
             self.cache_blocks[tag] = CacheBlock(tag)
+        else:
+            cache.log(f"Cache hit for tag: {tag}, set id = {self.index}")
+            cache.cache_hits+=1
+            cache.cycles+=L1_CACHE_HIT_CC
         
         self.eviction_handler.use(tag)
         # perform write
@@ -130,6 +158,7 @@ class Cache:
     """
     Write-back, write allocate cache with LRU policy
     """
+    id: int
     size: int
     associativity: int
     block_size_bytes: int
@@ -137,8 +166,12 @@ class Cache:
     set_count: int
     m_set: int # Number of cache sets = 2^m
     sets: list[CacheSet]
+    cache_hits:int = 0
+    cache_misses: int = 0
+    cycles: int = 0
 
-    def __init__(self, size, associativity, block_size_bytes):
+    def __init__(self, id, size, associativity, block_size_bytes):
+        self.id = id
         self.size = size
         self.associativity = associativity
         self.block_size_bytes = block_size_bytes
@@ -156,15 +189,20 @@ class Cache:
         )
     
     def read(self, mem_addr: int):
+        self.log(f"Processing read from address {mem_addr}")
         addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
         set_ind = addr_info.set_index
         set = self.sets[set_ind]
         tag = addr_info.tag
-        return set.read(tag)
+        return set.read(tag, self)
 
     def write(self, mem_addr: int):
+        self.log(f"Processing write from address {mem_addr}")
         addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
         set_ind = addr_info.set_index
         set = self.sets[set_ind]
         tag = addr_info.tag
-        return set.write(tag)
+        return set.write(tag, self)
+
+    def log(self, message:str):
+        LOGGER.info(f"Cache {self.id}: " + message)

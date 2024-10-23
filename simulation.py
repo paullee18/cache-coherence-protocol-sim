@@ -1,18 +1,13 @@
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
+from core import Core
+from cache import Cache
+from instruction import (
+    Instruction,
+    InstructionType
+)
 import logging
 
 LOGGER = logging.getLogger("coherence")
-
-class InstructionType(Enum):
-    LOAD = "0"
-    STORE = "1"
-    OTHER = "2"
-
-@dataclass
-class Instruction:
-    type: InstructionType
-    value: int
 
 @dataclass
 class Simulation:
@@ -21,6 +16,11 @@ class Simulation:
     associativity: int
     block_size_bytes: int
     word_size_bits: int
+    core: Core = field(init=False)
+
+    def __post_init__(self):
+        cache = Cache(0, self.cache_size, self.associativity, self.block_size_bytes)
+        self.core = Core(0, cache)
 
     def _parse_line(self, line) -> Instruction:
         line_list = line.split()
@@ -48,5 +48,6 @@ class Simulation:
         with open(self.input_file) as f:
             for line in f:
                 instr: Instruction = self._parse_line(line)
-                LOGGER.info(f"Parsed instruction: {instr}")
-                
+                self.core.execute_instr(instr)
+            LOGGER.info("All instructions executed.")             
+            self.core.print_final_outputs()
