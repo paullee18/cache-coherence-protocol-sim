@@ -1,5 +1,5 @@
 import unittest
-from cache import Cache, CacheSet  # Replace 'your_module' with the actual module name where your classes are defined
+from cache import Cache, CacheSet, LRUEvictionHandler  # Replace 'your_module' with the actual module name where your classes are defined
 from constants import MEM_FETCH_CC, L1_CACHE_HIT_CC, EVICT_DIRTY_CACHE_BLOCK_CC
 
 
@@ -111,6 +111,99 @@ class TestCache(unittest.TestCase):
 
         self.cache.write(mem_addr3)
         self.assertEqual(self.cache.cycles, 6 * MEM_FETCH_CC + 3 * EVICT_DIRTY_CACHE_BLOCK_CC)
+
+    def test_associativity_edge_case(self):
+        mem_addr1 = 0x00000000  # Set 0, Tag 0
+        mem_addr2 = 0x00000010  # Set 1, Tag 0
+        mem_addr3 = 0x00000020  # Set 0, Tag 1
+        mem_addr4 = 0x00000030  # Set 1, Tag 1
+
+        # Access different sets - no eviction should happen
+        self.cache.read(mem_addr1)
+        self.cache.read(mem_addr2)
+        self.cache.read(mem_addr3)
+        self.cache.read(mem_addr4)
+        
+        self.assertEqual(self.cache.cache_misses, 4)
+        self.assertEqual(self.cache.cycles, 4 * MEM_FETCH_CC)
+
+        # Re-access mem_addr1 and mem_addr2 - hits expected
+        self.cache.read(mem_addr1)
+        self.cache.read(mem_addr2)
+        
+        self.assertEqual(self.cache.cache_hits, 2)
+        self.assertEqual(self.cache.cycles, 4 * MEM_FETCH_CC + 2 * L1_CACHE_HIT_CC)
+
+    def test_lru_usage_update(self):
+        eviction_handler = LRUEvictionHandler()
+
+        # Access three different blocks
+        eviction_handler.use(1)
+        eviction_handler.use(2)
+        eviction_handler.use(3)
+
+        # Expected order: 3, 2, 1 (most recent at the front)
+        assert str(eviction_handler.dll) == "3,2,1"
+
+        # Access block 2 again
+        eviction_handler.use(2)
+
+        # Expected order: 2, 3, 1 (block 2 is moved to the front)
+        assert str(eviction_handler.dll) == "2,3,1"
+
+    def test_lru_eviction(self):
+        eviction_handler = LRUEvictionHandler()
+
+        # Access three different blocks
+        eviction_handler.use(1)
+        eviction_handler.use(2)
+        eviction_handler.use(3)
+
+        # Expected order: 3, 2, 1 (most recent at the front)
+        assert str(eviction_handler.dll) == "3,2,1"
+
+        # Evict the least recently used block
+        evicted_tag = eviction_handler.evict()
+
+        # Expected eviction: 1 (which is at the back)
+        assert evicted_tag == 1
+        
+        # Expected remaining order: 3, 2
+        assert str(eviction_handler.dll) == "3,2"
+
+    def test_use_and_evict_with_repeated_access(self):
+        eviction_handler = LRUEvictionHandler()
+
+        # Access four different blocks
+        eviction_handler.use(1)
+        eviction_handler.use(2)
+        eviction_handler.use(3)
+        eviction_handler.use(4)
+
+        # Expected order: 4, 3, 2, 1
+        assert str(eviction_handler.dll) == "4,3,2,1"
+
+        # Access block 2 again
+        eviction_handler.use(2)
+
+        # Expected order: 2, 4, 3, 1 (block 2 moves to the front)
+        assert str(eviction_handler.dll) == "2,4,3,1"
+
+        # Evict the least recently used block (1)
+        evicted_tag = eviction_handler.evict()
+        assert evicted_tag == 1
+        assert str(eviction_handler.dll) == "2,4,3"
+        
+        # Access block 4 again
+        eviction_handler.use(4)
+
+        # Expected order: 4, 2, 3 (block 4 moves to the front)
+        assert str(eviction_handler.dll) == "4,2,3"
+
+        # Evict the least recently used block (3)
+        evicted_tag = eviction_handler.evict()
+        assert evicted_tag == 3
+        assert str(eviction_handler.dll) == "4,2"
 
 if __name__ == "__main__":
     unittest.main()

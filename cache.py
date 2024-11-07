@@ -24,7 +24,7 @@ class CacheBlock:
 
 @dataclass
 class DLLNode:
-    tag: str
+    tag: int
     prev: "DLLNode" = None
     next: "DLLNode" = None
 
@@ -59,7 +59,15 @@ class DLL:
         self.next = None
         self.prev = None
         return last
-
+    
+    def __str__(self):
+        s = ""
+        itr = self.head.next
+        while itr!=self.tail:
+            s+=(str(itr.tag)+",")
+            itr = itr.next
+        return s[:-1]
+    
 @dataclass
 class LRUEvictionHandler:
     tag_to_node: dict[int, DLLNode] = field(default_factory=dict)
@@ -115,6 +123,8 @@ class CacheSet:
 
             # bring in new block
             self.cache_blocks[tag] = CacheBlock(tag)
+            # add cc for final read from cache
+            cache.cycles+=L1_CACHE_HIT_CC
         else:
             cache.log(f"Cache hit for tag: {tag}, set id = {self.index}")
             cache.cache_hits+=1
@@ -144,6 +154,8 @@ class CacheSet:
                 self.cache_blocks.pop(evicted_tag)
             # bring in new block
             self.cache_blocks[tag] = CacheBlock(tag)
+            # add cc for final read from cache
+            cache.cycles+=L1_CACHE_HIT_CC
         else:
             cache.log(f"Cache hit for tag: {tag}, set id = {self.index}")
             cache.cache_hits+=1
