@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from enum import Enum
 from constants import (
     L1_CACHE_HIT_CC,
     MEM_FETCH_CC,
@@ -16,10 +17,23 @@ class MemAddressCacheInfo:
     set_index: int
     offset: int
 
+
+class CacheBlockState(Enum):
+    MODIFIED = 1
+    EXCLUSIVE = 3
+    SHARED = 4
+    INVALID = 2
+
+class CacheBlockEvent(Enum):
+    PrRd = 1
+    PrWr = 2
+    BusRd = 3
+    BusRdX = 4
+
 @dataclass
 class CacheBlock:
     tag: int
-    dirty: bool = False
+    state: CacheBlockState = CacheBlockState.INVALID
     # data and size ?
 
 @dataclass
@@ -87,7 +101,7 @@ class LRUEvictionHandler:
         evicted_node = self.dll.pop_back()
         self.tag_to_node.pop(evicted_node.tag)
         return evicted_node.tag
-
+    
 @dataclass
 class CacheSet:
     associativity: int
@@ -101,69 +115,47 @@ class CacheSet:
         self.index = index
         self.eviction_handler = LRUEvictionHandler()
 
-    def read(self, tag, cache: "Cache"):
+    def invalidate(self, tag):
         if tag not in self.cache_blocks:
-            cache.log(f"Cache miss for tag: {tag}, set id = {self.index}")
-            cache.cache_misses+=1
-            cache.cycles+=MEM_FETCH_CC
-            # have to load it in, check if set is at full capacity
-            if len(self.cache_blocks) == self.associativity:
-                cache.log(f"Cache set full with size {len(self.cache_blocks)} and associativity {self.associativity}. Evicting.")
-                # have to choose one to evict
-                evicted_tag = self.eviction_handler.evict()
-                # handle writing of evicted block if needed
-                evicted_block = self.cache_blocks[evicted_tag]
-                cache.log(f"Evicting block: {evicted_block}")
-                if evicted_block.dirty:
-                    # write
-                    cache.log(f"Writing to memory for dirty evicted block")
-                    cache.cycles+=EVICT_DIRTY_CACHE_BLOCK_CC
+            return # no op
+        self.cache_blocks[tag].state = CacheBlockState.INVALID
 
-                self.cache_blocks.pop(evicted_tag)
-
-            # bring in new block
-            self.cache_blocks[tag] = CacheBlock(tag)
-            # add cc for final read from cache
-            cache.cycles+=L1_CACHE_HIT_CC
-        else:
-            cache.log(f"Cache hit for tag: {tag}, set id = {self.index}")
-            cache.cache_hits+=1
-            cache.cycles+=L1_CACHE_HIT_CC
-        
-        self.eviction_handler.use(tag)
-        # perform read
-
-    def write(self, tag, cache: "Cache"):
+    def is_valid(self, tag):
         if tag not in self.cache_blocks:
-            cache.log(f"Cache miss for tag: {tag}, set id = {self.index}")
-            cache.cache_misses+=1
-            cache.cycles+=MEM_FETCH_CC
-            # have to load it in, check if set is at full capacity
-            if len(self.cache_blocks) == self.associativity:
-                # have to choose one to evict
-                cache.log(f"Cache set full with size {len(self.cache_blocks)} and associativity {self.associativity}. Evicting.")
-                evicted_tag = self.eviction_handler.evict()
-                # handle writing of evicted block if needed
-                evicted_block = self.cache_blocks[evicted_tag]
-                cache.log(f"Evicting block: {evicted_block}")
-                if evicted_block.dirty:
-                    # write
-                    cache.log(f"Writing to memory for dirty evicted block")
-                    cache.cycles+=EVICT_DIRTY_CACHE_BLOCK_CC
-
-                self.cache_blocks.pop(evicted_tag)
-            # bring in new block
-            self.cache_blocks[tag] = CacheBlock(tag)
-            # add cc for final read from cache
-            cache.cycles+=L1_CACHE_HIT_CC
-        else:
-            cache.log(f"Cache hit for tag: {tag}, set id = {self.index}")
-            cache.cache_hits+=1
-            cache.cycles+=L1_CACHE_HIT_CC
-        
+            return False
+        block = self.cache_blocks[tag]
+        return block.state != CacheBlockState.INVALID
+    
+    def is_in_cache(self, tag) -> bool:
+        return tag in self.cache_blocks
+    
+    def on_cache_hit(self, tag):
         self.eviction_handler.use(tag)
-        # perform write
-        self.cache_blocks[tag].dirty = True
+
+    def on_block_use(self, tag):
+        self.eviction_handler.use(tag)
+
+    def get_block_state(self, tag) -> CacheBlockState:
+        if tag not in self.cache_blocks:
+            return CacheBlockState.INVALID
+        return self.cache_blocks[tag].state
+
+    def set_block_state(self, tag, new_state:CacheBlockState):
+        if tag not in self.cache_blocks:
+            raise Exception(f"Error, trying to set state for block not in cache set - {tag}, {self.cache_blocks}")
+        self.cache_blocks[tag].state = new_state
+
+    def is_cache_set_full(self):
+        return len(self.cache_blocks) == self.associativity
+    
+    def evict_block(self):
+        evicted_tag = self.eviction_handler.evict()
+        evicted_block = self.cache_blocks[evicted_tag]
+        self.cache_blocks.pop(evicted_tag)
+        return evicted_block
+    
+    def add_block(self, tag):
+        self.cache_blocks[tag] = CacheBlock(tag)
 
 @dataclass
 class Cache:
@@ -200,21 +192,73 @@ class Cache:
             tag, set_index, offset
         )
     
-    def read(self, mem_addr: int):
-        self.log(f"Processing read from address {mem_addr}")
+    def is_in_cache(self, mem_addr: int) -> bool:
         addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
         set_ind = addr_info.set_index
         set = self.sets[set_ind]
         tag = addr_info.tag
-        return set.read(tag, self)
+        return set.is_in_cache(tag)
+    
+    def invalidate(self, mem_addr: int):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        tag = addr_info.tag
+        set.invalidate(tag)
 
-    def write(self, mem_addr: int):
-        self.log(f"Processing write from address {mem_addr}")
+    def is_valid(self, mem_addr: int):
         addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
         set_ind = addr_info.set_index
         set = self.sets[set_ind]
         tag = addr_info.tag
-        return set.write(tag, self)
+        return set.is_valid(tag)
+    
+    def on_cache_hit(self, mem_addr: int):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        tag = addr_info.tag
+        set.on_cache_hit(tag)
+
+    def on_block_use(self, mem_addr: int):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        tag = addr_info.tag
+        set.on_block_use(tag)
+
+    def get_block_state(self, mem_addr: int) -> CacheBlockState:
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        tag = addr_info.tag
+        return set.get_block_state(tag)
+    
+    def set_block_state(self, mem_addr: int, new_state: CacheBlockState):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        tag = addr_info.tag
+        set.set_block_state(tag, new_state)
+
+    def is_cache_set_full(self, mem_addr):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        return set.is_cache_set_full()
+
+    def evict_block(self, mem_addr):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        return set.evict_block()
+
+    def add_block(self, mem_addr):
+        addr_info: MemAddressCacheInfo = self.get_info_from_addr(mem_addr)
+        set_ind = addr_info.set_index
+        set = self.sets[set_ind]
+        tag = addr_info.tag
+        set.add_block(tag)
 
     def log(self, message:str):
         LOGGER.info(f"Cache {self.id}: " + message)

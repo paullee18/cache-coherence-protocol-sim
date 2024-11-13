@@ -18,6 +18,8 @@ set associative cache per processor.
 import logging
 import sys
 from simulation import Simulation
+from coherence_protocol import CoherenceProtocol
+from mesi import MESI
 from constants import WORD_SIZE_BITS
 
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +51,7 @@ def main():
     LOGGER.info(f"Command arguments: Protocol - {protocol}, input file - {input_file}, cache size - {cache_size}, associativity - {associativity}, block size - {block_size}")
     word_size = WORD_SIZE_BITS
 
-    simulation: Simulation = Simulation(input_file, cache_size, associativity, block_size, word_size)
+    simulation: Simulation = Simulation(protocol, input_file, cache_size, associativity, block_size, word_size)
     simulation.simulate()
 
 if __name__ == "__main__":
